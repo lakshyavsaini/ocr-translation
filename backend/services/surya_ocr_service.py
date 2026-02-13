@@ -1,5 +1,12 @@
+import torch
 import cv2
 from config import DEVICE
+from PIL import Image
+
+# patch for pad_token_id issue
+from transformers.configuration_utils import PretrainedConfig
+if not hasattr(PretrainedConfig, "pad_token_id"):
+    PretrainedConfig.pad_token_id = 0
 
 from surya.foundation import FoundationPredictor
 from surya.detection import DetectionPredictor
@@ -9,33 +16,40 @@ from surya.recognition import RecognitionPredictor
 class SuryaOCRService:
 
     def __init__(self):
-        print("Initializing Surya OCR predictors (GPU Linux)")
+        print("Initializing Surya OCR predictors (YOUR API VARIANT)")
 
-        self.foundation = FoundationPredictor(device=DEVICE)
+        dtype = torch.float16 if DEVICE == "cuda" else torch.float32
 
-        self.detector = DetectionPredictor(
-            foundation_predictor=self.foundation
+        # foundation is required ONLY for recognition predictor
+        self.foundation = FoundationPredictor(
+            device=DEVICE,
+            dtype=dtype
         )
 
+        # detection uses device + dtype directly
+        self.detector = DetectionPredictor(
+            device=DEVICE,
+            dtype=dtype
+        )
+
+        # recognition requires foundation_predictor positional argument
         self.recognizer = RecognitionPredictor(
-            foundation_predictor=self.foundation
+            self.foundation
         )
 
     def extract_text(self, image):
-
+        # Convert numpy/cv2 image to PIL Image (Surya requires PIL Images)
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_image = Image.fromarray(image_rgb)
 
-        detections = self.detector([image_rgb])[0]
+        detections = self.detector([pil_image])[0]
 
         if not detections:
             return ""
 
-        results = self.recognizer([image_rgb], [detections])[0]
+        results = self.recognizer([pil_image], [detections], det_predictor=self.detector)[0]
 
-        texts = []
-
-        for line in results:
-            texts.append(line.text)
+        texts = [line.text for line in results]
 
         return "\n".join(texts)
 
